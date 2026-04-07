@@ -1,0 +1,279 @@
+/*
+===============================================================================
+Stored Procedure: Load Silver Layer (Bronze -> Silver)
+===============================================================================
+Script Purpose:
+    This stored procedure performs the ETL (Extract, Transform, Load) process to 
+    populate the 'silver' schema tables from the 'bronze' schema.
+	Actions Performed:
+		- Truncates Silver tables.
+		- Inserts transformed and cleansed data from Bronze into Silver tables.
+		
+Parameters:
+    None. 
+	  This stored procedure does not accept any parameters or return any values.
+
+Usage Example:
+    EXEC Silver.load_silver;
+===============================================================================
+*/
+
+
+
+--exec silver.load_silver
+
+
+create or alter procedure silver.load_silver as
+begin
+       DECLARE @start_time DATETIME,@end_time datetime;
+       begin try
+
+       /*```````````````````````````````````````````````silver.crm_cust_info`````````````````````````````````````````*/
+        set @start_time=getdate()
+		print '------------------------------'
+		print 'loading Silver layer'
+		print '------------------------------'
+
+		print '------------------------------'
+		print 'loading CRM layer'
+		print '------------------------------'
+
+		set @start_time=getdate()
+        print '>> Truncating Table : silver.crm_cust_info'
+        truncate table silver.crm_cust_info
+        print '>> Inserting data into : silver.crm_cust_info';
+
+        with m as (
+            select *
+            from 
+            (
+                select *,
+                ROW_NUMBER()over(partition by cst_id order by cst_create_date desc)flag_high
+                from DataWarehouse.bronze.crm_cust_info
+                where cst_create_date is not null
+
+            )t
+            where flag_high=1 
+          )
+        insert into DataWarehouse.silver.crm_cust_info(
+            cst_id,
+            cst_key,
+            cst_firstname,
+            cst_lastname,
+            cst_marital_status,
+            cst_gndr,cst_create_date
+           )
+        select cst_id,cst_key,trim(cst_firstname)cst_firstname,
+        trim(cst_lastname) cst_lastname,
+        case 
+
+            when upper(trim(cst_marital_status))='S' then 'Single'
+            when upper(trim(cst_marital_status))='M' then 'Married'
+            else 'N/A'
+        end cst_marital_status,
+
+        case 
+            when upper(trim(cst_gndr))='F' then 'Female'
+            when upper(trim(cst_gndr))='M' then 'Male'
+            else 'N/A'
+        end cst_gndr,
+        cst_create_date
+        from m 
+
+        set @end_time=GETDATE();
+		print '>> load duration: '+cast(datediff(second,@start_time,@end_time)as nvarchar)+'seconds';
+		print'>> ------------------';
+
+
+
+		set @start_time=getdate()
+        print '>> Truncating Table : silver.crm_prd_info'
+        truncate table silver.crm_cust_info
+        print '>> Inserting data into : silver.crm_prd_info';
+
+                    WITH m AS (
+                SELECT *
+                FROM (
+                    SELECT *,
+                           ROW_NUMBER() OVER (PARTITION BY prd_key ORDER BY prd_end_dt DESC) AS flag_high
+                    FROM [DataWarehouse].[bronze].[crm_prd_info]
+                ) t
+                WHERE flag_high =  1
+                )
+
+            INSERT INTO DataWarehouse.silver.crm_prd_info (
+			            prd_id,
+			            cat_id,
+			            prd_key,
+			            prd_nm,
+			            prd_cost,
+			            prd_line,
+			            prd_start_dt,
+			            prd_end_dt
+		            )
+		            SELECT
+			            prd_id,
+			            REPLACE(SUBSTRING(prd_key, 1, 5), '-', '_') AS cat_id, -- Extract category ID
+			            SUBSTRING(prd_key, 7, LEN(prd_key)) AS prd_key,        -- Extract product key
+			            prd_nm,
+			            ISNULL(prd_cost, 0) AS prd_cost,
+			            CASE 
+				              WHEN UPPER(TRIM(prd_line))='R' THEN 'Manufacturing'
+                              WHEN UPPER(TRIM(prd_line))='S' THEN 'Services'
+                              WHEN UPPER(TRIM(prd_line))='M' THEN 'Retail'
+                              WHEN UPPER(TRIM(prd_line))='T' THEN 'Technology'
+                              ELSE 'N/A'
+			            END AS prd_line, -- Map product line codes to descriptive values
+			            CAST(prd_start_dt AS DATE) AS prd_start_dt,
+			            CAST(
+				            LEAD(prd_start_dt) OVER (PARTITION BY prd_key ORDER BY prd_start_dt) - 1 
+				            AS DATE
+			            ) AS prd_end_dt -- Calculate end date as one day before the next start date
+		            FROM m
+
+                    set @end_time=GETDATE();
+		            print '>> load duration: '+cast(datediff(second,@start_time,@end_time)as nvarchar)+'seconds';
+		            print'>> ------------------';
+
+		/*```````````````````````````````````````````````silver.crm_sales_details`````````````````````````````````````````*/
+        
+        set @start_time=getdate()
+        print '>> Truncating Table : silver.crm_sales_details'
+        truncate table silver.crm_cust_info
+        print '>> Inserting data into : silver.crm_sales_details';
+                insert into DataWarehouse.silver.crm_sales_details
+                ( 
+                       [sls_ord_num]
+                      ,[sls_prd_key]
+                      ,[sls_cust_id]
+                      ,[sls_order_dt]
+                      ,[sls_ship_dt]
+                      ,[sls_due_dt]
+                      ,[sls_sales]
+                      ,[sls_quantity]
+                      ,[sls_price]
+     
+                )
+                 SELECT [sls_ord_num]
+                      ,[sls_prd_key]
+                      ,[sls_cust_id]
+                      ,
+                      case 
+                         when sls_order_dt=0 or len(sls_order_dt)!=8 then null
+                         else cast(cast(sls_order_dt as varchar)as date)
+                      end as sls_order_dt,
+                       case 
+                         when sls_ship_dt=0 or len(sls_ship_dt)!=8 then null
+                         else cast(cast(sls_ship_dt as varchar)as date)
+                      end as sls_ship_dt,
+                       case 
+                         when sls_due_dt=0 or len(sls_due_dt)!=8 then null
+                         else cast(cast(sls_due_dt as varchar)as date)
+                      end as sls_due_dt,
+                      case when sls_sales is null or sls_sales<=0 or sls_sales!=sls_quantity*abs(sls_price)
+                           then sls_quantity*abs(sls_price)
+                           else sls_sales
+                       end sls_sales, --recalculate sales if original value is missing or incorrect
+                      [sls_quantity]
+                      ,case 
+                         when sls_price is null or sls_price<=0 then sls_sales/nullif(sls_quantity,0)
+                         else sls_price -- Drive price if original value is invalid
+                       end as sls_price
+                  FROM [DataWarehouse].[bronze].[crm_sales_details]
+                set @end_time=GETDATE();
+		        print '>> load duration: '+cast(datediff(second,@start_time,@end_time)as nvarchar)+'seconds';
+		        print'>> ------------------';
+
+		
+        /*```````````````````````````````````````````````silver.erp_cust_az12`````````````````````````````````````````*/
+        
+        set @start_time=getdate()
+        print '>> Truncating Table : silver.erp_cust_az12'
+        truncate table silver.crm_cust_info
+        print '>> Inserting data into : silver.erp_cust_az12';
+
+
+                    insert into DataWarehouse.silver.erp_cust_az12
+                  (   cid
+                  ,bdate
+                  ,gen)
+
+            SELECT   
+                  case when cid like 'NAS%' then substring(cid,4,len(cid))
+                       else cid
+                   end cid
+                  ,case when bdate > getdate() then null
+                       else bdate
+                   end bdate
+                  ,case 
+                        when upper(trim(gen)) in ('F','Female') then 'Female'
+                        when upper(trim(gen)) in ('M','Male') then 'Male'
+                        else 'N/A'
+                   end gen
+      
+              FROM [DataWarehouse].[bronze].[erp_cust_az12]
+                 set @end_time=GETDATE();
+		        print '>> load duration: '+cast(datediff(second,@start_time,@end_time)as nvarchar)+'seconds';
+		        print'>> ------------------';
+
+     
+       /*```````````````````````````````````````````````silver.erp_loc_a101`````````````````````````````````````````*/
+
+		set @start_time=getdate()
+        print '>> Truncating Table : silver.erp_loc_a101'
+        truncate table silver.crm_cust_info
+        print '>> Inserting data into : silver.erp_loc_a101';
+
+                insert into DataWarehouse.silver.erp_loc_a101
+                (cid,cntry)
+
+                SELECT 
+                REPLACE(cid, '-', '') AS cid
+                , case
+                    when upper(trim(cntry)) in ('US','USA') then 'United States'
+                    when upper(trim(cntry)) in ('DE') then 'Germany'
+                    when trim(cntry) ='' or cntry is null then 'N/A'
+                    else trim(cntry)
+                 end cntry
+                FROM DataWarehouse.bronze.erp_loc_a101
+                set @end_time=GETDATE();
+		        print '>> load duration: '+cast(datediff(second,@start_time,@end_time)as nvarchar)+'seconds';
+		        print'>> ------------------';
+
+		
+        /*```````````````````````````````````````````````silver.erp_px_cat_g1v2`````````````````````````````````````````*/
+        
+        set @start_time=getdate()
+        print '>> Truncating Table : silver.erp_px_cat_g1v2'
+        truncate table silver.crm_cust_info
+        print '>> Inserting data into : silver.erp_px_cat_g1v2';
+
+          insert into DataWarehouse.silver.erp_px_cat_g1v2(
+           id
+          ,cat
+          ,subcat
+          ,maintenance
+          )
+
+            SELECT  
+                   id
+                  ,cat
+                  ,subcat
+                  ,maintenance
+              FROM DataWarehouse.bronze.erp_px_cat_g1v2
+              set @end_time=GETDATE();
+		print '>> load duration: '+cast(datediff(second,@start_time,@end_time)as nvarchar)+'seconds';
+		print'>> ------------------';
+
+		
+
+ end try
+ begin catch
+   print '+++++++++++++++++++++++++++++++++++++++++++++'
+ 	PRINT 'ERROR OCCURED DURING LOADING BRONZE LAYER'
+	PRINT 'Error Message' + ERROR_MESSAGE();
+	PRINT 'Error Message' + CAST (ERROR_NUMBER() AS NVARCHAR);
+	PRINT 'Error Message' + CAST (ERROR_STATE() AS NVARCHAR);
+   print '+++++++++++++++++++++++++++++++++++++++++++++'
+ end catch
+end
